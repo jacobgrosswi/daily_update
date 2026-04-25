@@ -1,0 +1,18 @@
+# AI newsletters to curate. Add/remove entries here; the daily run reads this file.
+# `active: false` skips a sender without removing it.
+newsletters:
+  - name: TLDR AI
+    sender: dan@tldrnewsletter.com
+    active: true
+  - name: The Rundown
+    sender: news@daily.therundown.ai
+    active: true
+  - name: AI Breakfast
+    sender: aibreakfast@mail.beehiiv.com
+    active: true
+  - name: Ben's Bites
+    sender: bensbites@substack.com
+    active: true
+  - name: Superhuman AI
+    sender: superhuman@mail.joinsuperhuman.ai
+    active: true

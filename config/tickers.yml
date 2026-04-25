@@ -1,0 +1,14 @@
+# Indices shown in the Market Update section. yfinance symbols.
+tickers:
+  - symbol: ^GSPC
+    label: S&P 500
+  - symbol: ^IXIC
+    label: Nasdaq
+  - symbol: ^DJI
+    label: Dow
+  - symbol: ^TNX
+    label: 10-yr Tsy
+    is_yield: true
+
+# Pre-market callout threshold (absolute percent move).
+premarket_alert_pct: 1.0

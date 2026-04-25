@@ -1,0 +1,46 @@
+# User preferences for briefing curation. Editable by hand; also updated by the
+# feedback loop (replies to a briefing) and by the weekly tune-up workflow.
+
+# Skip briefing generation entirely (e.g. vacation). Workflow still runs but no-ops.
+paused: false
+
+# Newsletter curation (Section 4.4 of SCOPING).
+newsletters:
+  top_n: 5
+  item_length_sentences: [2, 7]
+  rules:
+    - id: finance_boost
+      description: Items with explicit impact on finance, FP&A, or accounting are boosted.
+      weight: 2.0
+    - id: cross_newsletter_signal
+      description: Items repeated across 3+ newsletters are boosted.
+      weight: 1.5
+    - id: novel_finance_beats_general
+      description: Novel items with a finance/FP&A/accounting angle beat widely-covered general AI news.
+      weight: 1.5
+  default_buckets:
+    - model releases
+    - major funding
+    - regulatory news
+    - enterprise AI adoption
+
+# Email bucketing (Section 4.1).
+email:
+  drop_senders_matching:
+    - "noreply@"
+    - "no-reply@"
+    - "donotreply@"
+    - "notifications@"
+    - "mailer-daemon@"
+  buckets:
+    orders_shipping:
+      sender_keywords: [amazon, ups, fedex, usps, dhl, shopify, rockauto]
+      subject_keywords: [shipped, delivered, "out for delivery", tracking]
+    appointments:
+      sender_keywords: [calendly, "outlook.office.com", "google calendar"]
+      subject_keywords: [appointment, "meeting confirmation", reschedule, reminder]
+
+# Cost guardrail (Section 5).
+budget:
+  per_run_max_usd: 0.25
+  monthly_target_usd: 5.00
