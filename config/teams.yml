@@ -11,7 +11,7 @@ teams:
   - name: Green Bay Packers
     league: NFL
     api: thesportsdb
-    team_id: 134844
+    team_id: 134940
 
 # Playoff coverage (all teams in these leagues during postseason).
 playoffs:
