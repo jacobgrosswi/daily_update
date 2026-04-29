@@ -1,0 +1,111 @@
+# Daily Briefing — runs at 6:00 AM Central time, every day.
+#
+# Two cron entries cover both daylight-saving offsets (CDT = UTC-5,
+# CST = UTC-6). The first step exits early when the local Central hour
+# isn't 06, so only one of the two firings actually does work each day.
+#
+# After each successful run, this workflow:
+#   1. Updates the MS_REFRESH_TOKEN repo secret if MSAL rotated it
+#      (Microsoft personal-account refresh tokens rotate on every use;
+#      without this, day 2 fails with invalid_grant).
+#   2. Commits archive/YYYY-MM-DD.md and state/last_run.json back to main.
+name: Daily Briefing
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # 6 AM CDT (mid-March → early November)
+    - cron: '0 12 * * *'   # 6 AM CST (early November → mid-March)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Compose only — do not send email or commit archive/state'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # for the archive/state commit-back
+
+concurrency:
+  group: daily-briefing
+  cancel-in-progress: false
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Skip if not 6 AM Central
+        id: gate
+        run: |
+          HOUR_CT=$(TZ=America/Chicago date +%H)
+          echo "Current Central hour: $HOUR_CT"
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$HOUR_CT" != "06" ]; then
+            echo "Not 6 AM CT (it's $HOUR_CT); the other cron will fire today."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        if: steps.gate.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        if: steps.gate.outputs.skip != 'true'
+        run: uv sync --frozen
+
+      - name: Configure refresh-token output path
+        if: steps.gate.outputs.skip != 'true'
+        run: echo "REFRESH_TOKEN_OUT_PATH=$RUNNER_TEMP/ms_refresh_token.txt" >> "$GITHUB_ENV"
+
+      - name: Run briefing
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+          BRIEFING_RECIPIENT: ${{ secrets.BRIEFING_RECIPIENT }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          uv run python -m src.main $DRY_RUN_FLAG
+
+      - name: Update MS_REFRESH_TOKEN if rotated
+        # always() so we still rotate even when a downstream section/delivery
+        # failed — auth happened first, so the old token is already burned.
+        if: ${{ steps.gate.outputs.skip != 'true' && (success() || failure()) }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -s "$REFRESH_TOKEN_OUT_PATH" ]; then
+            echo "Refresh token rotated by Microsoft; updating MS_REFRESH_TOKEN secret."
+            gh secret set MS_REFRESH_TOKEN --body "$(cat "$REFRESH_TOKEN_OUT_PATH")"
+            shred -u "$REFRESH_TOKEN_OUT_PATH" 2>/dev/null || rm -f "$REFRESH_TOKEN_OUT_PATH"
+          else
+            echo "No refresh-token rotation detected this run."
+          fi
+
+      - name: Commit archive + state
+        if: ${{ steps.gate.outputs.skip != 'true' && success() && inputs.dry_run != true }}
+        run: |
+          git config user.name "daily-update-bot"
+          git config user.email "daily-update-bot@users.noreply.github.com"
+          git add archive/ state/
+          if git diff --cached --quiet; then
+            echo "No archive or state changes to commit."
+          else
+            DATE_CT=$(TZ=America/Chicago date +%Y-%m-%d)
+            git commit -m "chore(briefing): $DATE_CT archive + state"
+            git push origin HEAD:${{ github.ref_name }}
+          fi

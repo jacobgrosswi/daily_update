@@ -41,6 +41,9 @@ def patches(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "email_window",
                         lambda now=None: (datetime(2026, 4, 25, 11, 0, tzinfo=UTC), RUN_TS))
     monkeypatch.setattr(main, "utc_now", lambda: RUN_TS)
+    # Default: no rotation file path. Individual tests opt in.
+    monkeypatch.delenv("REFRESH_TOKEN_OUT_PATH", raising=False)
+    monkeypatch.delenv("MS_REFRESH_TOKEN", raising=False)
 
     write_state = MagicMock()
     monkeypatch.setattr(main, "write_last_run", write_state)
@@ -178,6 +181,60 @@ def test_dry_run_prints_to_stdout_and_skips_delivery(patches, capsys):
     assert out.startswith("# Daily Briefing — 2026-04-26\n")
     patches.deliver.assert_not_called()
     patches.write_state.assert_not_called()
+
+
+# ---------- Refresh token rotation ----------
+
+def test_persist_writes_when_token_rotated(patches, tmp_path, monkeypatch):
+    out = tmp_path / "rt.txt"
+    monkeypatch.setenv("REFRESH_TOKEN_OUT_PATH", str(out))
+    monkeypatch.setenv("MS_REFRESH_TOKEN", "old-rt")
+
+    ec = _stub_email_client()
+    ec.current_refresh_token = "new-rt"
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=ec, claude=MagicMock(), now_utc=RUN_TS)
+
+    assert out.read_text() == "new-rt"
+
+
+def test_persist_skips_when_token_unchanged(patches, tmp_path, monkeypatch):
+    out = tmp_path / "rt.txt"
+    monkeypatch.setenv("REFRESH_TOKEN_OUT_PATH", str(out))
+    monkeypatch.setenv("MS_REFRESH_TOKEN", "same-rt")
+
+    ec = _stub_email_client()
+    ec.current_refresh_token = "same-rt"
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=ec, claude=MagicMock(), now_utc=RUN_TS)
+
+    assert not out.exists()
+
+
+def test_persist_runs_even_when_delivery_fails(patches, tmp_path, monkeypatch):
+    """Auth happens before delivery, so rotation must be persisted even on send failure."""
+    out = tmp_path / "rt.txt"
+    monkeypatch.setenv("REFRESH_TOKEN_OUT_PATH", str(out))
+    monkeypatch.setenv("MS_REFRESH_TOKEN", "old-rt")
+    patches.deliver.side_effect = RuntimeError("graph send 500")
+
+    ec = _stub_email_client()
+    ec.current_refresh_token = "rotated-rt"
+    rc = main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+                  email_client=ec, claude=MagicMock(), now_utc=RUN_TS)
+
+    assert rc == 1
+    assert out.read_text() == "rotated-rt"
+
+
+def test_persist_noop_without_env_var(patches, tmp_path, monkeypatch):
+    """Local dev path: no env var, no file — even if email_client reports rotation."""
+    monkeypatch.setenv("MS_REFRESH_TOKEN", "old-rt")
+    ec = _stub_email_client()
+    ec.current_refresh_token = "new-rt"
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=ec, claude=MagicMock(), now_utc=RUN_TS)
+    # No assertion of file absence — just that the run didn't raise.
 
 
 # ---------- Recipient override ----------

@@ -24,6 +24,32 @@ uv run python -m src.main --dry-run
 - `--dry-run` — compose briefing and print to stdout; no email send, no archive write
 - `--test` — use fixture data only; no external API calls
 
-## Setup walkthrough
+## Production deployment
 
-OAuth and GitHub Actions setup steps will be filled in as those modules land. See SCOPING doc Section 7 for the Microsoft Graph App Registration outline.
+The daily briefing runs from `.github/workflows/daily_update.yml` on a 6 AM Central cron. Two cron entries cover both daylight-saving offsets; a gate step exits early when the local Central hour isn't 06, so only one of the two firings does work each day.
+
+### Required repo secrets
+
+| Secret | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic API auth |
+| `MS_CLIENT_ID` | Microsoft Graph app ID |
+| `MS_CLIENT_SECRET` | Microsoft Graph app secret |
+| `MS_REFRESH_TOKEN` | Long-lived Graph auth (rotates — see below) |
+| `BALLDONTLIE_API_KEY` | NBA scores (free tier) |
+| `BRIEFING_RECIPIENT` | Where the briefing is sent |
+| `GH_PAT` | Fine-grained PAT with `secrets:write` on this repo. Used to update `MS_REFRESH_TOKEN` after Microsoft rotates it. |
+
+### Refresh token rotation
+
+Personal Microsoft account refresh tokens rotate on every use. The workflow detects rotation via `REFRESH_TOKEN_OUT_PATH` (the orchestrator writes the new token to this file only when MSAL hands back a different value), then runs `gh secret set MS_REFRESH_TOKEN` using `GH_PAT`. Without `GH_PAT`, day 2 will fail with `invalid_grant`.
+
+To create `GH_PAT`: GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens. Resource access: this repo only. Permissions: `Secrets: Read and write` (also read on Metadata, which is required by default).
+
+### Manual run
+
+The workflow has a `workflow_dispatch` trigger with a `dry_run` input — useful for verifying setup without sending email or committing archive/state.
+
+## Microsoft Graph OAuth setup
+
+See SCOPING doc Section 7 for the App Registration walkthrough. After registering the app and getting client ID/secret, run `scripts/get_refresh_token.py` once locally to mint the initial `MS_REFRESH_TOKEN`.

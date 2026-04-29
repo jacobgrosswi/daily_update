@@ -15,8 +15,10 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
@@ -36,6 +38,28 @@ from .utils import (
 )
 
 log = get_logger(__name__)
+
+
+# ---------- Refresh token rotation ----------
+
+def _persist_rotated_refresh_token(email_client: EmailClient) -> None:
+    """If MSAL rotated the refresh token mid-run, write it to the path in
+    REFRESH_TOKEN_OUT_PATH so the GitHub Actions runner can update the
+    MS_REFRESH_TOKEN secret. No-op when the env var is unset (local dev) or
+    when no rotation occurred (file is left absent so the workflow's existence
+    check naturally signals "no update needed").
+    """
+    out_path = os.environ.get("REFRESH_TOKEN_OUT_PATH")
+    if not out_path:
+        return
+    try:
+        current = email_client.current_refresh_token
+    except Exception:
+        return
+    original = os.environ.get("MS_REFRESH_TOKEN")
+    if current and current != original:
+        Path(out_path).write_text(current)
+        log.info("Refresh token rotated; wrote new value to %s.", out_path)
 
 
 # ---------- Section wrapper ----------
@@ -84,6 +108,37 @@ def run(
     email_client = email_client or EmailClient()
     claude = claude or ClaudeClient()
 
+    try:
+        return _run_inner(
+            briefing_date=briefing_date,
+            target_date=target_date,
+            dry_run=dry_run,
+            recipient=recipient,
+            email_client=email_client,
+            claude=claude,
+            http_client=http_client,
+            run_started_utc=run_started_utc,
+            prefs=prefs,
+        )
+    finally:
+        # Always check for refresh-token rotation, even on partial/full failure —
+        # MSAL may have rotated the token before whatever failed downstream, and
+        # if we don't persist it the next run will fail with an invalid grant.
+        _persist_rotated_refresh_token(email_client)
+
+
+def _run_inner(
+    *,
+    briefing_date: date,
+    target_date: date,
+    dry_run: bool,
+    recipient: Optional[str],
+    email_client: EmailClient,
+    claude: ClaudeClient,
+    http_client: Optional[httpx.Client],
+    run_started_utc: datetime,
+    prefs: dict,
+) -> int:
     issues: list[str] = []
 
     # 1. Inbox fetch — feeds both the email summary and the newsletters section.
