@@ -9,20 +9,22 @@ newsletters:
   top_n: 5
   item_length_sentences: [2, 7]
   rules:
-    - id: finance_boost
-      description: Items with explicit impact on finance, FP&A, or accounting are boosted.
-      weight: 2.0
     - id: cross_newsletter_signal
-      description: Items repeated across 3+ newsletters are boosted.
+      description: Stories repeated across 3+ newsletters are boosted as a signal of importance.
+      weight: 2.0
+    - id: material_ai_news
+      description: Material AI news (model releases, major funding, regulatory developments, notable enterprise adoption, research breakthroughs, infrastructure shifts) is included on its own merits regardless of any finance angle.
       weight: 1.5
-    - id: novel_finance_beats_general
-      description: Novel items with a finance/FP&A/accounting angle beat widely-covered general AI news.
-      weight: 1.5
+    - id: finance_relevance
+      description: Stories with a genuine, source-backed finance, FP&A, or accounting implication get a small boost. Do not invent or stretch one to fit.
+      weight: 1.2
   default_buckets:
     - model releases
     - major funding
     - regulatory news
     - enterprise AI adoption
+    - research breakthroughs
+    - infrastructure shifts
 
 # Email bucketing (Section 4.1).
 email:

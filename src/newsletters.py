@@ -145,16 +145,21 @@ def fetch_newsletter_bodies(
 
 # ---------- Curation ----------
 
-_SYSTEM_PROMPT = """You are a newsletter curator for a daily personal briefing. The reader is a senior finance/FP&A professional who follows AI news closely.
+_SYSTEM_PROMPT = """You are a newsletter curator for a daily personal briefing. The reader is a senior finance/FP&A professional who follows AI news closely as a tech-savvy generalist — they want the most important AI news of the day, full stop. Finance, FP&A, or accounting context is a bonus when it's genuinely there in the source, not a filter on what's selected.
 
 Your job: read several AI-focused newsletters from a single day, deduplicate overlapping stories, and select the top items.
+
+Guidelines:
+- Pick stories on importance and relevance to a well-informed AI reader. Material model releases, major funding, regulatory news, enterprise adoption, research breakthroughs, and infrastructure shifts all qualify on their own merits.
+- Mention a finance, FP&A, or accounting implication ONLY when the source material actually establishes one. Do not invent, stretch, or speculate. Most stories will not have one, and that is fine — write a clean general summary instead.
+- Be concrete. Reference the companies, dollar figures, dates, and names that appear in the source. Do not pad with generic commentary.
 
 Output STRICT JSON only — no prose, no markdown fences. Schema:
 {
   "items": [
     {
       "headline": "string — short and concrete",
-      "summary": "string — 2 to 7 sentences. Call out a finance, FP&A, or accounting angle if one exists.",
+      "summary": "string — 2 to 7 sentences. Plain summary. Add a finance/FP&A/accounting angle ONLY if the source actually establishes one.",
       "sources": ["Newsletter name as given in input", "..."]
     }
   ]
