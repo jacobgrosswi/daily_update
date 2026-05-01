@@ -23,7 +23,7 @@ from typing import Callable, Optional
 
 import httpx
 
-from . import email_summary, markets, newsletters, sports
+from . import email_summary, feedback, markets, newsletters, sports
 from .claude_client import ClaudeClient
 from .delivery import Briefing, briefing_id, deliver
 from .email_client import Email, EmailClient
@@ -141,6 +141,21 @@ def _run_inner(
 ) -> int:
     issues: list[str] = []
 
+    # 0.5. Apply pending feedback (replies to prior briefings) BEFORE composing.
+    # Reload prefs after so today's run sees any fresh edits.
+    feedback_result = feedback.FeedbackResult()
+    try:
+        feedback_result = feedback.apply_pending_feedback(
+            email_client=email_client, claude=claude, now=run_started_utc,
+            commit=not dry_run,
+        )
+        if feedback_result.prefs_changed:
+            prefs = newsletters.load_preferences()
+            log.info("Feedback: %d op(s) applied; prefs reloaded.", len(feedback_result.applied))
+    except Exception as e:
+        log.exception("Feedback loop failed; continuing without applying replies.")
+        issues.append(f"Feedback: {e}")
+
     # 1. Inbox fetch — feeds both the email summary and the newsletters section.
     start, end = email_window(now=run_started_utc)
     log.info("Email window: %s → %s", start.isoformat(), end.isoformat())
@@ -211,14 +226,21 @@ def _run_inner(
     if err:
         issues.append(err)
 
-    # 4. Compose the full document.
+    # 4. Compose the full document. The "Applied your feedback" block goes at
+    # the top, right under the date header, so the user sees what changed before
+    # reading the rest.
     bid = briefing_id(briefing_date)
     header = f"# Daily Briefing — {bid}\n"
+    feedback_md = feedback.render_markdown(feedback_result)
     body = "\n".join(sections)
     footer = ""
     if issues:
         footer = "\n## Issues\n\n" + "\n".join(f"- {i}" for i in issues) + "\n"
-    markdown = header + "\n" + body + footer
+    parts = [header]
+    if feedback_md:
+        parts.append("\n" + feedback_md)
+    parts.append("\n" + body + footer)
+    markdown = "".join(parts)
 
     briefing = Briefing(briefing_date=briefing_date, markdown=markdown)
 

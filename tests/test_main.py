@@ -10,6 +10,7 @@ import pytest
 from src import main
 from src.delivery import Briefing
 from src.email_client import Email
+from src.feedback import AppliedOp, FeedbackResult
 from src.newsletters import NewsletterConfig, NewslettersResult
 
 UTC = timezone.utc
@@ -73,6 +74,8 @@ def patches(tmp_path, monkeypatch):
                                          return_value="## Newsletters\n\nbody\n"),
         deliver=patch.object(main, "deliver",
                               return_value=("2026-04-26", tmp_path / "2026-04-26.md")),
+        apply_feedback=patch.object(main.feedback, "apply_pending_feedback",
+                                     return_value=FeedbackResult()),
     )
     started = [getattr(p, k).start() for k in vars(p)]
     try:
@@ -235,6 +238,49 @@ def test_persist_noop_without_env_var(patches, tmp_path, monkeypatch):
     main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
              email_client=ec, claude=MagicMock(), now_utc=RUN_TS)
     # No assertion of file absence — just that the run didn't raise.
+
+
+# ---------- Feedback wiring ----------
+
+def test_feedback_block_renders_at_top_of_briefing(patches):
+    patches.apply_feedback.return_value = FeedbackResult(
+        applied=[AppliedOp(op="set_top_n", args={"value": 7},
+                           summary="newsletters.top_n: 5 → 7", reply_id="r1")],
+    )
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    md = patches.deliver.call_args.args[0].markdown
+    # Feedback block must appear before the first section.
+    assert md.index("## Applied your feedback") < md.index("## Email Summary")
+    assert "newsletters.top_n: 5 → 7" in md
+
+
+def test_feedback_reloads_prefs_after_change(patches):
+    patches.apply_feedback.return_value = FeedbackResult(
+        applied=[AppliedOp(op="noop", args={}, summary="x", reply_id="r1")],
+        prefs_changed=True,
+    )
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    # When prefs change, load_preferences is called twice — once at startup,
+    # once after feedback applies.
+    assert patches.load_preferences.call_count == 2
+
+
+def test_feedback_failure_isolated_to_issues_footer(patches):
+    patches.apply_feedback.side_effect = RuntimeError("triage exploded")
+    rc = main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+                  email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    assert rc == 0
+    md = patches.deliver.call_args.args[0].markdown
+    assert "Feedback: triage exploded" in md
+
+
+def test_feedback_block_omitted_when_no_replies(patches):
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    md = patches.deliver.call_args.args[0].markdown
+    assert "## Applied your feedback" not in md
 
 
 # ---------- Recipient override ----------

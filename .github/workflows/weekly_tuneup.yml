@@ -1,0 +1,100 @@
+# Weekly tune-up — Sonnet 4.6 reviews the last 7 briefings and proposes
+# preferences.yml edits as a PR for manual review/merge.
+#
+# workflow_dispatch only — the user runs this on demand (or we can add a
+# Sunday-noon-CT cron later once we trust the proposals). Manual triggering
+# also avoids accidentally opening many PRs while iterating.
+#
+# Why a PR (not a direct commit): Sonnet has broader latitude here than the
+# daily narrow ops in feedback.py. The diff goes through human review before
+# touching the canonical config.
+name: Weekly tune-up
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Lookback window in days'
+        type: string
+        default: '7'
+
+permissions:
+  contents: read   # branch + commit + push happens via GH_PAT, not GITHUB_TOKEN
+
+concurrency:
+  group: weekly-tuneup
+  cancel-in-progress: false
+
+jobs:
+  tuneup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Use GH_PAT so the branch push later is allowed to trigger PR-checks
+          # workflows on the new branch (default GITHUB_TOKEN cannot do this).
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: uv sync --frozen
+
+      - name: Run tune-up
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          uv run python -m src.tuneup \
+            --output-prefs "$RUNNER_TEMP/proposed_prefs.yml" \
+            --output-rationale "$RUNNER_TEMP/rationale.md" \
+            --days "${{ inputs.days }}"
+
+      - name: Open PR if proposal differs from current
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PROPOSED="$RUNNER_TEMP/proposed_prefs.yml"
+          RATIONALE="$RUNNER_TEMP/rationale.md"
+
+          if cmp -s "$PROPOSED" config/preferences.yml; then
+            echo "Tune-up proposed no changes; nothing to PR."
+            exit 0
+          fi
+
+          DATE_CT=$(TZ=America/Chicago date +%Y-%m-%d)
+          BRANCH="tuneup/$DATE_CT"
+
+          git config user.name "daily-update-bot"
+          git config user.email "daily-update-bot@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          cp "$PROPOSED" config/preferences.yml
+          git add config/preferences.yml
+          git commit -m "Weekly tune-up: $DATE_CT proposed prefs"
+          git push -u origin "$BRANCH"
+
+          BODY_FILE="$RUNNER_TEMP/pr_body.md"
+          {
+            echo "Sonnet 4.6 reviewed the last ${{ inputs.days }} days of archived briefings and proposed the following preference changes."
+            echo
+            echo "## Rationale"
+            echo
+            cat "$RATIONALE"
+            echo
+            echo "## Diff"
+            echo
+            echo '```diff'
+            git diff main..HEAD -- config/preferences.yml || true
+            echo '```'
+          } > "$BODY_FILE"
+
+          gh pr create \
+            --title "Weekly tune-up: $DATE_CT" \
+            --body-file "$BODY_FILE" \
+            --base main \
+            --head "$BRANCH"

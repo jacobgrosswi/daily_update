@@ -50,6 +50,26 @@ To create `GH_PAT`: GitHub Settings → Developer settings → Personal access t
 
 The workflow has a `workflow_dispatch` trigger with a `dry_run` input — useful for verifying setup without sending email or committing archive/state.
 
+## Feedback loop & weekly tune-up
+
+The briefing has two preference-editing paths:
+
+- **Continuous feedback** runs every morning before composing. It reads new
+  replies to prior briefings (subject `Re: Daily Briefing - ...`), asks Claude
+  Haiku to translate each reply into a narrow ops vocabulary
+  (`set_top_n`, `add_drop_sender`, `add_bucket_keyword`, `add_curation_rule`,
+  `set_paused`), and applies validated ops to `config/preferences.yml`. The
+  next briefing renders an "Applied your feedback" block at the top showing
+  what changed. Anything outside the vocabulary is collected in a
+  "Needs tune-up" sub-section. Replies are tracked in
+  `state/processed_replies.json` to prevent re-processing.
+
+- **Weekly tune-up** is a `workflow_dispatch`-only workflow
+  (`.github/workflows/weekly_tuneup.yml`). It feeds Claude Sonnet 4.6 (with
+  adaptive thinking) the last 7 days of archived briefings plus the current
+  preferences, and Sonnet proposes an updated `preferences.yml`. The workflow
+  opens a PR for manual review — it does NOT auto-merge.
+
 ## Microsoft Graph OAuth setup
 
 See SCOPING doc Section 7 for the App Registration walkthrough. After registering the app and getting client ID/secret, run `scripts/get_refresh_token.py` once locally to mint the initial `MS_REFRESH_TOKEN`.
