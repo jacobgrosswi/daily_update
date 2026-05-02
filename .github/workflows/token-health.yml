@@ -1,0 +1,89 @@
+# Weekly Microsoft Graph refresh-token health check.
+#
+# Runs Sundays at noon Central. Two cron entries cover both daylight-saving
+# offsets (CDT = UTC-5, CST = UTC-6); a gate step exits early when it's not
+# actually Sunday-noon CT, so only one of the two firings does work each week.
+#
+# Why this exists: personal Microsoft account refresh tokens have a 90-day
+# inactivity window. Daily use rolls them, but if the daily workflow has been
+# silently failing (e.g., we missed an invalid_grant alert), this Sunday check
+# trips an explicit failure — GitHub emails the workflow owner by default,
+# giving us a hard ceiling on how long a broken token can go unnoticed.
+#
+# On success, this also persists any refresh-token rotation MSAL hands back,
+# so the Sunday check itself doesn't burn the token for Monday's daily run.
+name: Token health check
+
+on:
+  schedule:
+    - cron: '0 17 * * 0'   # noon CDT Sunday (mid-March → early November)
+    - cron: '0 18 * * 0'   # noon CST Sunday (early November → mid-March)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: token-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Skip if not Sunday noon Central
+        id: gate
+        run: |
+          HOUR_CT=$(TZ=America/Chicago date +%H)
+          DOW_CT=$(TZ=America/Chicago date +%u)   # 1=Mon … 7=Sun
+          echo "Central: hour=$HOUR_CT dow=$DOW_CT"
+          if [ "${{ github.event_name }}" = "schedule" ] && \
+             { [ "$HOUR_CT" != "12" ] || [ "$DOW_CT" != "7" ]; }; then
+            echo "Not Sunday noon CT; the other cron will fire today."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        if: steps.gate.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        if: steps.gate.outputs.skip != 'true'
+        run: uv sync --frozen
+
+      - name: Configure refresh-token output path
+        if: steps.gate.outputs.skip != 'true'
+        run: echo "REFRESH_TOKEN_OUT_PATH=$RUNNER_TEMP/ms_refresh_token.txt" >> "$GITHUB_ENV"
+
+      - name: Check refresh token
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
+        run: uv run python scripts/check_token_health.py
+
+      - name: Update MS_REFRESH_TOKEN if rotated
+        # always() so we still persist a rotation even when the Graph ping
+        # later failed — by then the old token is already burned.
+        if: ${{ steps.gate.outputs.skip != 'true' && (success() || failure()) }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -s "$REFRESH_TOKEN_OUT_PATH" ]; then
+            echo "Refresh token rotated by Microsoft; updating MS_REFRESH_TOKEN secret."
+            gh secret set MS_REFRESH_TOKEN --body "$(cat "$REFRESH_TOKEN_OUT_PATH")"
+            shred -u "$REFRESH_TOKEN_OUT_PATH" 2>/dev/null || rm -f "$REFRESH_TOKEN_OUT_PATH"
+          else
+            echo "No refresh-token rotation detected this run."
+          fi

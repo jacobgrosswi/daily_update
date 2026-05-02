@@ -82,6 +82,14 @@ The briefing has two preference-editing paths:
   preferences, and Sonnet proposes an updated `preferences.yml`. The workflow
   opens a PR for manual review — it does NOT auto-merge.
 
+## Token health check
+
+`.github/workflows/token-health.yml` runs Sundays at noon Central. It exercises
+the refresh token via `scripts/check_token_health.py` (acquire access token +
+GET /me) and persists any rotation back to `MS_REFRESH_TOKEN`. If it fails,
+GitHub emails the workflow owner — a hard ceiling on how long a broken token
+can go unnoticed if the daily run has been silently failing.
+
 ## Microsoft Graph OAuth setup
 
 See SCOPING doc Section 7 for the App Registration walkthrough. After registering the app and getting client ID/secret, run `scripts/get_refresh_token.py` once locally to mint the initial `MS_REFRESH_TOKEN`.
