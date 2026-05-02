@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src import main
+from src.budget import HAIKU, Budget
 from src.delivery import Briefing
 from src.email_client import Email
 from src.feedback import AppliedOp, FeedbackResult
@@ -281,6 +282,49 @@ def test_feedback_block_omitted_when_no_replies(patches):
              email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
     md = patches.deliver.call_args.args[0].markdown
     assert "## Applied your feedback" not in md
+
+
+# ---------- Budget guardrail ----------
+
+def test_run_attaches_budget_to_claude(patches):
+    claude = MagicMock()
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=claude, now_utc=RUN_TS)
+    # The orchestrator must attach a Budget to whatever claude is passed in.
+    assert isinstance(claude.budget, Budget)
+    assert claude.budget.cap_usd == 0.25
+
+
+def test_run_passes_budget_to_newsletters(patches):
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    kwargs = patches.fetch_newsletters.call_args.kwargs
+    assert isinstance(kwargs["budget"], Budget)
+
+
+def test_run_exhausted_budget_appears_in_issues_footer(patches):
+    """When the budget is exhausted by Claude calls during the run, the Issues
+    footer must mention 'Budget cap reached' so the user notices."""
+    def exhaust_budget(*args, **kwargs):
+        # Simulate a section using up the budget mid-run. inbox is positional.
+        kwargs["budget"].record(label="big", model=HAIKU, cost=0.30)
+        return NewslettersResult(received=[], items=[])
+
+    patches.fetch_newsletters.side_effect = exhaust_budget
+    rc = main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+                  email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    assert rc == 0
+    md = patches.deliver.call_args.args[0].markdown
+    assert "## Issues" in md
+    assert "Budget cap reached" in md
+
+
+def test_run_under_budget_no_issues_footer(patches):
+    """Healthy run with no spend should not surface a budget issue."""
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    md = patches.deliver.call_args.args[0].markdown
+    assert "Budget cap reached" not in md
 
 
 # ---------- Recipient override ----------

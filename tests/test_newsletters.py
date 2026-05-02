@@ -8,9 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from src import newsletters
+from src.budget import Budget, BudgetExceeded
 from src.claude_client import HAIKU, CallResult
 from src.email_client import Email
 from src.newsletters import (
+    DEFAULT_BODY_CHAR_BUDGET,
+    MIN_BODY_CHAR_BUDGET,
     NewsItem,
     NewsletterConfig,
     NewsletterEmail,
@@ -19,6 +22,7 @@ from src.newsletters import (
     _format_bodies,
     _html_to_text,
     _parse_items,
+    _resolve_body_budget,
     curate_top_stories,
     fetch_newsletter_bodies,
     fetch_newsletters_section,
@@ -400,3 +404,87 @@ def test_render_markdown_omits_sources_line_when_empty():
     md = render_markdown(result)
     assert "1. H" in md
     assert "Sources:" not in md
+
+
+# ---------- Budget integration ----------
+
+def test_resolve_body_budget_no_budget_returns_requested():
+    assert _resolve_body_budget(80_000, None) == 80_000
+
+
+def test_resolve_body_budget_returns_requested_when_affordable():
+    # Full $0.25 cap → plenty of room for 80k chars.
+    assert _resolve_body_budget(80_000, Budget()) == 80_000
+
+
+def test_resolve_body_budget_shrinks_when_tight():
+    """Budget is tight but still has room above MIN — should trim, not raise."""
+    # Cap chosen so affordable < 80k but well above MIN_BODY_CHAR_BUDGET.
+    # At $0.04 cap, Haiku output ~$0.02 + overhead ~$0.0005 leaves ~$0.019
+    # for body input → ~66k chars affordable.
+    b = Budget(cap_usd=0.04)
+    chosen = _resolve_body_budget(80_000, b)
+    assert chosen < 80_000
+    assert chosen >= MIN_BODY_CHAR_BUDGET
+
+
+def test_resolve_body_budget_raises_when_below_minimum():
+    """When even MIN_BODY_CHAR_BUDGET would push us over, raise."""
+    b = Budget(cap_usd=0.05)
+    b.record(label="prior", model=HAIKU, cost=0.045)  # only 0.005 left
+    with pytest.raises(BudgetExceeded, match="cannot fit minimum"):
+        _resolve_body_budget(80_000, b)
+
+
+def test_curate_passes_budget_label_for_accounting():
+    """The newsletter call should be tagged 'newsletters' for budget records."""
+    claude = _claude_returning(json.dumps({"items": [{"headline": "H", "summary": "S."}]}))
+    out, warnings = curate_top_stories(
+        [_ne("X", "body")], claude=claude, preferences={}, budget=Budget(),
+    )
+    assert claude.call.call_args.kwargs["label"] == "newsletters"
+
+
+def test_curate_with_tight_budget_shrinks_body():
+    """Budget tightness should reduce the body chars sent to Claude."""
+    long_body = "x" * 60_000
+    claude = _claude_returning(json.dumps({"items": [{"headline": "H", "summary": "S."}]}))
+    # At $0.03 cap, affordable input ≈ 31k chars — forces truncation of 60k body.
+    tight = Budget(cap_usd=0.03)
+    curate_top_stories(
+        [_ne("X", long_body)], claude=claude, preferences={},
+        body_budget=80_000, budget=tight,
+    )
+    # The user message should NOT contain the full 60k-char body once trimmed.
+    user_msg = claude.call.call_args.kwargs["messages"][0]["content"]
+    assert "[truncated]" in user_msg
+
+
+def test_curate_propagates_budget_exceeded():
+    """When even minimum body can't fit, BudgetExceeded propagates so the
+    section wrapper surfaces it in Issues."""
+    b = Budget(cap_usd=0.001)  # absurdly tight
+    claude = _claude_returning("{}")
+    with pytest.raises(BudgetExceeded):
+        curate_top_stories(
+            [_ne("X", "body")], claude=claude, preferences={}, budget=b,
+        )
+    # Claude was never called.
+    claude.call.assert_not_called()
+
+
+def test_fetch_section_threads_budget_through():
+    """fetch_newsletters_section should pass budget down to curate_top_stories."""
+    cfgs = [_cfg(name="X", sender="x@x.com")]
+    ec = MagicMock()
+    ec.get_message_body.return_value = ("", "body text")
+    claude = _claude_returning(json.dumps({"items": [{"headline": "H", "summary": "S."}]}))
+    b = Budget()
+    fetch_newsletters_section(
+        [_email("x@x.com", msg_id="n1")],
+        email_client=ec, claude=claude,
+        configs=cfgs, preferences={"newsletters": {"top_n": 5}},
+        budget=b,
+    )
+    # Budget threaded → call carried the "newsletters" label.
+    assert claude.call.call_args.kwargs["label"] == "newsletters"

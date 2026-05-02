@@ -21,6 +21,7 @@ from typing import Optional
 
 import yaml
 
+from .budget import Budget, BudgetExceeded
 from .claude_client import HAIKU, ClaudeClient
 from .email_client import Email, EmailClient
 from .utils import REPO_ROOT, get_logger
@@ -34,6 +35,14 @@ PREFERENCES_PATH = REPO_ROOT / "config" / "preferences.yml"
 # the daily curation cost predictable so the budget guardrail (Step 12) has
 # a stable baseline. ~80k chars ≈ ~20k input tokens on Haiku.
 DEFAULT_BODY_CHAR_BUDGET = 80_000
+
+# Floor for body_budget when the dollar guardrail trims us. Below this the
+# curation prompt is too thin to be useful — better to skip the section.
+MIN_BODY_CHAR_BUDGET = 5_000
+
+# Curation max output. Mirrors the value passed in curate_top_stories below;
+# pulled out so the cost projection uses the same number.
+CURATION_MAX_TOKENS = 4_096
 
 
 # ---------- Models ----------
@@ -209,16 +218,53 @@ def _format_bodies(newsletters: list[NewsletterEmail], budget: int) -> str:
     return "\n\n".join(parts)
 
 
+def _resolve_body_budget(
+    requested: int, budget: Optional[Budget],
+) -> int:
+    """Shrink body_budget if the dollar Budget can't afford it.
+
+    Returns the chosen char budget. Raises BudgetExceeded when even the
+    MIN_BODY_CHAR_BUDGET floor would push us over the cap — the section
+    wrapper catches that and surfaces "Section unavailable" in Issues.
+    """
+    if budget is None:
+        return requested
+    affordable = budget.affordable_input_chars(
+        model=HAIKU, max_output_tokens=CURATION_MAX_TOKENS,
+    )
+    if affordable >= requested:
+        return requested
+    if affordable >= MIN_BODY_CHAR_BUDGET:
+        log.warning(
+            "Newsletters: trimming body budget from %d → %d chars to fit "
+            "remaining budget $%.4f.",
+            requested, affordable, budget.remaining(),
+        )
+        return affordable
+    raise BudgetExceeded(
+        f"newsletters cannot fit minimum {MIN_BODY_CHAR_BUDGET} body chars "
+        f"in remaining ${budget.remaining():.4f} (affordable={affordable})"
+    )
+
+
 def curate_top_stories(
     newsletters: list[NewsletterEmail],
     *,
     claude: ClaudeClient,
     preferences: dict,
     body_budget: int = DEFAULT_BODY_CHAR_BUDGET,
+    budget: Optional[Budget] = None,
 ) -> tuple[list[NewsItem], list[str]]:
-    """Run Claude over the newsletter bodies; return (items, warnings)."""
+    """Run Claude over the newsletter bodies; return (items, warnings).
+
+    When `budget` is provided, body_budget is shrunk if the cap can't afford
+    the full size. If even the minimum body would push us over the cap,
+    BudgetExceeded is raised (caught by the section wrapper).
+    """
     if not newsletters:
         return [], ["No newsletters received in the window."]
+
+    body_budget = _resolve_body_budget(body_budget, budget)
 
     user = _build_user_message(newsletters, preferences, body_budget)
     try:
@@ -226,8 +272,11 @@ def curate_top_stories(
             messages=[{"role": "user", "content": user}],
             model=HAIKU,
             system=_SYSTEM_PROMPT,
-            max_tokens=4096,
+            max_tokens=CURATION_MAX_TOKENS,
+            label="newsletters",
         )
+    except BudgetExceeded:
+        raise
     except Exception as e:
         log.warning("Claude curation call failed: %s", e)
         return [], [f"Curation failed: {e}"]
@@ -272,6 +321,7 @@ def fetch_newsletters_section(
     configs: Optional[list[NewsletterConfig]] = None,
     preferences: Optional[dict] = None,
     body_budget: int = DEFAULT_BODY_CHAR_BUDGET,
+    budget: Optional[Budget] = None,
 ) -> NewslettersResult:
     """End-to-end: filter → fetch bodies → curate."""
     cfgs = configs if configs is not None else load_newsletters_config()
@@ -280,7 +330,8 @@ def fetch_newsletters_section(
     pairs = filter_newsletters(emails, cfgs)
     bodies = fetch_newsletter_bodies(pairs, email_client)
     items, warnings = curate_top_stories(
-        bodies, claude=claude, preferences=prefs, body_budget=body_budget,
+        bodies, claude=claude, preferences=prefs,
+        body_budget=body_budget, budget=budget,
     )
     return NewslettersResult(received=bodies, items=items, warnings=warnings)
 

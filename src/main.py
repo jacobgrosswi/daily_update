@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import httpx
 
 from . import email_summary, feedback, markets, newsletters, sports
+from .budget import Budget
 from .claude_client import ClaudeClient
 from .delivery import Briefing, briefing_id, deliver
 from .email_client import Email, EmailClient
@@ -105,8 +106,15 @@ def run(
         log.info("Briefing paused via preferences.yml. Exiting without action.")
         return 0
 
+    budget = Budget()
     email_client = email_client or EmailClient()
-    claude = claude or ClaudeClient()
+    claude = claude or ClaudeClient(budget=budget)
+    # Attach budget even when claude was injected (test fixtures use MagicMock,
+    # which silently accepts the attribute write).
+    try:
+        claude.budget = budget
+    except AttributeError:
+        pass
 
     try:
         return _run_inner(
@@ -119,6 +127,7 @@ def run(
             http_client=http_client,
             run_started_utc=run_started_utc,
             prefs=prefs,
+            budget=budget,
         )
     finally:
         # Always check for refresh-token rotation, even on partial/full failure —
@@ -138,6 +147,7 @@ def _run_inner(
     http_client: Optional[httpx.Client],
     run_started_utc: datetime,
     prefs: dict,
+    budget: Budget,
 ) -> int:
     issues: list[str] = []
 
@@ -219,12 +229,18 @@ def _run_inner(
                 claude=claude,
                 configs=nl_configs,
                 preferences=prefs,
+                budget=budget,
             )
         ),
     )
     sections.append(md)
     if err:
         issues.append(err)
+
+    # Surface budget exhaustion in the Issues footer so the user sees that the
+    # cap kicked in. The Budget object itself logs every recorded call.
+    if budget.is_exhausted():
+        issues.append(f"Budget cap reached: {budget.summary()}")
 
     # 4. Compose the full document. The "Applied your feedback" block goes at
     # the top, right under the date header, so the user sees what changed before
@@ -259,8 +275,8 @@ def _run_inner(
         log.exception("Delivery failed; not updating last_run state.")
         return 1
 
-    log.info("Briefing delivered: id=%s archive=%s issues=%d",
-             delivered_id, archive_path, len(issues))
+    log.info("Briefing delivered: id=%s archive=%s issues=%d budget=%s",
+             delivered_id, archive_path, len(issues), budget.summary())
 
     # 6. Persist run state so tomorrow's email window starts from this run.
     write_last_run(RunState(

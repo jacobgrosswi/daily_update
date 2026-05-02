@@ -4,8 +4,9 @@ Two model tiers per scoping doc Section 5:
 - Haiku 4.5  — daily email bucketing, newsletter curation, feedback parsing
 - Sonnet 4.6 — weekly tune-up (deeper pattern reasoning over a week of archive)
 
-The wrapper exposes a single `call()` that returns text + usage + cost so the
-budget guardrail (Step 12) can enforce the per-run cap.
+Cost math + the per-run cap live in budget.py; this wrapper just records
+each call's actual usage into the attached Budget (if any) and pre-fails
+when the cap is already met.
 """
 from __future__ import annotations
 
@@ -15,18 +16,13 @@ from typing import Optional, Union
 
 import anthropic
 
+from .budget import HAIKU, PRICES, SONNET, Budget, cost_usd
 from .utils import get_logger
 
+# Re-exports — existing callers import HAIKU/SONNET from here.
+__all__ = ["HAIKU", "SONNET", "PRICES", "CallResult", "ClaudeClient"]
+
 log = get_logger(__name__)
-
-HAIKU = "claude-haiku-4-5"
-SONNET = "claude-sonnet-4-6"
-
-# USD per 1M tokens (sourced from claude-api skill model table).
-PRICES = {
-    HAIKU: {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25},
-    SONNET: {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-}
 
 
 @dataclass
@@ -41,21 +37,30 @@ class CallResult:
 
     @property
     def cost_usd(self) -> float:
-        p = PRICES[self.model]
-        return (
-            self.input_tokens * p["input"]
-            + self.output_tokens * p["output"]
-            + self.cache_read_tokens * p["cache_read"]
-            + self.cache_creation_tokens * p["cache_write"]
-        ) / 1_000_000
+        return cost_usd(
+            model=self.model,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_creation_tokens=self.cache_creation_tokens,
+        )
 
 
 class ClaudeClient:
-    def __init__(self, api_key: Optional[str] = None, max_retries: int = 3):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        max_retries: int = 3,
+        budget: Optional[Budget] = None,
+    ):
         self._client = anthropic.Anthropic(
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
             max_retries=max_retries,
         )
+        # Optional Budget; main.py attaches one for production runs. Tests that
+        # inject a MagicMock claude don't need this set — record-on-success
+        # is no-op when budget is None.
+        self.budget: Optional[Budget] = budget
 
     def call(
         self,
@@ -66,6 +71,7 @@ class ClaudeClient:
         max_tokens: int = 4096,
         cache_system: bool = False,
         thinking: Optional[dict] = None,
+        label: Optional[str] = None,
     ) -> CallResult:
         """Make a single Messages API call and return text + usage.
 
@@ -80,7 +86,12 @@ class ClaudeClient:
                 actually cache; shorter prefixes are silently uncached.
             thinking: Pass {"type": "adaptive"} for Sonnet 4.6 reasoning.
                 Haiku 4.5 does not support thinking.
+            label: Short tag for budget accounting (e.g. "newsletters",
+                "feedback.triage"). Defaults to the model name.
         """
+        if self.budget is not None:
+            self.budget.assert_not_exhausted(label=label or model)
+
         kwargs: dict = {
             "model": model,
             "max_tokens": max_tokens,
@@ -96,8 +107,8 @@ class ClaudeClient:
             kwargs["thinking"] = thinking
 
         log.info(
-            "Claude call: model=%s max_tokens=%d messages=%d cache_system=%s",
-            model, max_tokens, len(messages), cache_system,
+            "Claude call: model=%s max_tokens=%d messages=%d cache_system=%s label=%s",
+            model, max_tokens, len(messages), cache_system, label or "-",
         )
 
         resp = self._client.messages.create(**kwargs)
@@ -120,6 +131,10 @@ class ClaudeClient:
             result.cache_read_tokens, result.cache_creation_tokens,
             result.cost_usd, result.stop_reason,
         )
+
+        if self.budget is not None:
+            self.budget.record(label=label or model, model=model, cost=result.cost_usd)
+
         return result
 
 

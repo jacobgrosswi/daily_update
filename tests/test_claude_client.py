@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src import claude_client
+from src.budget import Budget, BudgetExceeded
 from src.claude_client import HAIKU, SONNET, CallResult, ClaudeClient, _prepare_system
 
 
@@ -117,3 +118,56 @@ def test_max_tokens_override(client):
     client.call(messages=[{"role": "user", "content": "hi"}], max_tokens=8192)
     kwargs = client._underlying.messages.create.call_args.kwargs
     assert kwargs["max_tokens"] == 8192
+
+
+# ---------- Budget integration ----------
+
+def test_call_records_cost_to_budget_on_success(client):
+    client._underlying.messages.create.return_value = _mock_response(
+        input_tokens=1_000_000, output_tokens=1_000_000,
+    )
+    budget = Budget(cap_usd=10.00)
+    client.budget = budget
+    client.call(messages=[{"role": "user", "content": "hi"}], label="test_label")
+    # Haiku 1M in + 1M out = $6.00
+    assert budget.spent_usd == pytest.approx(6.00)
+    assert len(budget.records) == 1
+    assert budget.records[0].label == "test_label"
+    assert budget.records[0].model == HAIKU
+
+
+def test_label_defaults_to_model_name(client):
+    client._underlying.messages.create.return_value = _mock_response()
+    budget = Budget()
+    client.budget = budget
+    client.call(messages=[{"role": "user", "content": "hi"}])
+    assert budget.records[0].label == HAIKU
+
+
+def test_call_raises_when_budget_already_exhausted(client):
+    budget = Budget(cap_usd=0.05)
+    budget.record(label="prior", model=HAIKU, cost=0.10)
+    client.budget = budget
+    with pytest.raises(BudgetExceeded, match="exhausted before"):
+        client.call(messages=[{"role": "user", "content": "hi"}], label="next")
+    # Pre-flight refused — must NOT have hit the API.
+    client._underlying.messages.create.assert_not_called()
+
+
+def test_call_without_budget_does_not_record(client):
+    client._underlying.messages.create.return_value = _mock_response()
+    client.budget = None  # default
+    # Should not raise; just makes the call normally.
+    result = client.call(messages=[{"role": "user", "content": "hi"}])
+    assert result.text == "ok"
+
+
+def test_budget_passed_via_constructor(monkeypatch):
+    fake = MagicMock()
+    fake.messages.create.return_value = _mock_response()
+    monkeypatch.setattr(claude_client.anthropic, "Anthropic", lambda **kw: fake)
+    budget = Budget()
+    c = ClaudeClient(api_key="test-key", budget=budget)
+    assert c.budget is budget
+    c.call(messages=[{"role": "user", "content": "hi"}])
+    assert len(budget.records) == 1

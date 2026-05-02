@@ -50,6 +50,18 @@ To create `GH_PAT`: GitHub Settings → Developer settings → Personal access t
 
 The workflow has a `workflow_dispatch` trigger with a `dry_run` input — useful for verifying setup without sending email or committing archive/state.
 
+## Cost guardrail
+
+Each run carries a `Budget` (default cap: **$0.25**). Every Claude call is
+recorded against it; once the cap is met, subsequent calls fail fast with
+`BudgetExceeded` (the relevant section is skipped, briefing still ships).
+The newsletters section additionally consults the budget before composing
+its prompt and truncates body chars when remaining budget is tight; if even
+the minimum body would push us over, the section reports
+"Section unavailable" in the Issues footer rather than silently exceeding
+the cap. Realistic days spend ~$0.04, so the cap is a safety net for runaway
+calls — it should rarely trigger in normal operation. See `src/budget.py`.
+
 ## Feedback loop & weekly tune-up
 
 The briefing has two preference-editing paths:
