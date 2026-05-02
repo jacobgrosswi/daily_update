@@ -82,6 +82,15 @@ The briefing has two preference-editing paths:
   preferences, and Sonnet proposes an updated `preferences.yml`. The workflow
   opens a PR for manual review — it does NOT auto-merge.
 
+## Archive retention
+
+Each successful run writes the briefing to `archive/YYYY-MM-DD.md`, then
+`prune_archive()` deletes any entries older than 21 days (the window the
+weekly tune-up reviews). Pruning is best-effort — a failure logs a warning
+but doesn't change the run outcome. The daily workflow stages deletions via
+`git add -A archive/` so removed files end up in the same commit as the new
+one.
+
 ## Token health check
 
 `.github/workflows/token-health.yml` runs Sundays at noon Central. It exercises

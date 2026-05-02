@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +26,10 @@ log = get_logger(__name__)
 
 ARCHIVE_DIR = REPO_ROOT / "archive"
 DEFAULT_RECIPIENT = "jacobgrosswi@outlook.com"
+
+# Per scoping §10: 3 weeks is enough history for weekly tune-ups to spot
+# patterns without letting personal email summaries accumulate forever.
+ARCHIVE_RETENTION_DAYS = 21
 
 # nl2br preserves the indented continuation lines we use for sports notes and
 # numbered newsletter items — without it, every \n inside a paragraph collapses
@@ -103,6 +107,35 @@ def write_archive(briefing: Briefing, archive_dir: Path = ARCHIVE_DIR) -> Path:
     path.write_text(text)
     log.info("Archive written: %s (%d chars)", path, len(text))
     return path
+
+
+def prune_archive(
+    today: date,
+    *,
+    archive_dir: Path = ARCHIVE_DIR,
+    max_age_days: int = ARCHIVE_RETENTION_DAYS,
+) -> list[Path]:
+    """Delete archive/YYYY-MM-DD.md files older than max_age_days.
+
+    Returns the deleted paths. Files whose stem isn't a valid ISO date are
+    left alone — a stray README in archive/ should not get nuked.
+    """
+    if not archive_dir.exists():
+        return []
+    cutoff = today - timedelta(days=max_age_days)
+    deleted: list[Path] = []
+    for path in sorted(archive_dir.glob("*.md")):
+        try:
+            file_date = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            path.unlink()
+            deleted.append(path)
+    if deleted:
+        log.info("Pruned %d archive file(s) older than %d days (cutoff=%s).",
+                 len(deleted), max_age_days, cutoff.isoformat())
+    return deleted
 
 
 # ---------- Send ----------

@@ -75,6 +75,7 @@ def patches(tmp_path, monkeypatch):
                                          return_value="## Newsletters\n\nbody\n"),
         deliver=patch.object(main, "deliver",
                               return_value=("2026-04-26", tmp_path / "2026-04-26.md")),
+        prune_archive=patch.object(main, "prune_archive", return_value=[]),
         apply_feedback=patch.object(main.feedback, "apply_pending_feedback",
                                      return_value=FeedbackResult()),
     )
@@ -185,6 +186,40 @@ def test_dry_run_prints_to_stdout_and_skips_delivery(patches, capsys):
     assert out.startswith("# Daily Briefing — 2026-04-26\n")
     patches.deliver.assert_not_called()
     patches.write_state.assert_not_called()
+
+
+# ---------- Archive pruning ----------
+
+def test_prune_called_after_successful_delivery(patches):
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    patches.prune_archive.assert_called_once()
+    assert patches.prune_archive.call_args.kwargs["today"] == BRIEFING_DATE
+
+
+def test_prune_skipped_on_dry_run(patches):
+    main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE, dry_run=True,
+             email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    patches.prune_archive.assert_not_called()
+
+
+def test_prune_skipped_when_delivery_fails(patches):
+    patches.deliver.side_effect = RuntimeError("graph 500")
+    rc = main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+                  email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    assert rc == 1
+    patches.prune_archive.assert_not_called()
+
+
+def test_prune_failure_does_not_fail_the_run(patches):
+    """Pruning runs after delivery — a janitorial failure should not change
+    the run's outcome."""
+    patches.prune_archive.side_effect = OSError("permission denied")
+    rc = main.run(briefing_date=BRIEFING_DATE, target_date=TARGET_DATE,
+                  email_client=_stub_email_client(), claude=MagicMock(), now_utc=RUN_TS)
+    assert rc == 0
+    state = patches.write_state.call_args.args[0]
+    assert state.last_run_status == "ok"
 
 
 # ---------- Refresh token rotation ----------

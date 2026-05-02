@@ -26,7 +26,7 @@ import httpx
 from . import email_summary, feedback, markets, newsletters, sports
 from .budget import Budget
 from .claude_client import ClaudeClient
-from .delivery import Briefing, briefing_id, deliver
+from .delivery import Briefing, briefing_id, deliver, prune_archive
 from .email_client import Email, EmailClient
 from .utils import (
     RunState,
@@ -277,6 +277,15 @@ def _run_inner(
 
     log.info("Briefing delivered: id=%s archive=%s issues=%d budget=%s",
              delivered_id, archive_path, len(issues), budget.summary())
+
+    # 5.5. Prune old archives. Best-effort: pruning runs after the briefing has
+    # already shipped, so a failure here doesn't change the run's status — the
+    # next day will retry. Log only; don't touch the (already-rendered) issues
+    # footer.
+    try:
+        prune_archive(today=briefing_date)
+    except Exception as e:
+        log.warning("Archive pruning failed: %s", e)
 
     # 6. Persist run state so tomorrow's email window starts from this run.
     write_last_run(RunState(

@@ -7,12 +7,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.delivery import (
+    ARCHIVE_RETENTION_DAYS,
     DEFAULT_RECIPIENT,
     Briefing,
     briefing_id,
     briefing_subject,
     deliver,
     markdown_to_html,
+    prune_archive,
     send_briefing,
     write_archive,
 )
@@ -177,3 +179,60 @@ def test_deliver_keeps_archive_even_when_send_fails(tmp_path):
         deliver(briefing, email_client=ec,
                 recipient="me@example.com", archive_dir=tmp_path)
     assert (tmp_path / "2026-04-25.md").exists()
+
+
+# ---------- prune_archive ----------
+
+def _touch(dir: "object", name: str) -> "object":
+    p = dir / name
+    p.write_text("x")
+    return p
+
+
+def test_retention_default_is_21_days():
+    assert ARCHIVE_RETENTION_DAYS == 21
+
+
+def test_prune_removes_only_files_older_than_cutoff(tmp_path):
+    today = date(2026, 5, 1)
+    # cutoff = today - 21 days = 2026-04-10. Files dated < 2026-04-10 are pruned.
+    too_old = _touch(tmp_path, "2026-04-09.md")    # 22 days → prune
+    edge = _touch(tmp_path, "2026-04-10.md")        # exactly 21 days → keep
+    fresh = _touch(tmp_path, "2026-04-30.md")       # 1 day → keep
+    today_file = _touch(tmp_path, "2026-05-01.md")  # 0 days → keep
+
+    deleted = prune_archive(today, archive_dir=tmp_path)
+
+    assert deleted == [too_old]
+    assert not too_old.exists()
+    assert edge.exists() and fresh.exists() and today_file.exists()
+
+
+def test_prune_skips_non_iso_filenames(tmp_path):
+    today = date(2026, 5, 1)
+    weird = _touch(tmp_path, "README.md")
+    also_weird = _touch(tmp_path, "2026-13-99.md")  # invalid date
+    old = _touch(tmp_path, "2025-01-01.md")
+
+    deleted = prune_archive(today, archive_dir=tmp_path)
+
+    assert deleted == [old]
+    assert weird.exists() and also_weird.exists()
+
+
+def test_prune_returns_empty_when_dir_missing(tmp_path):
+    missing = tmp_path / "nope"
+    assert prune_archive(date(2026, 5, 1), archive_dir=missing) == []
+
+
+def test_prune_empty_dir_is_noop(tmp_path):
+    assert prune_archive(date(2026, 5, 1), archive_dir=tmp_path) == []
+
+
+def test_prune_respects_max_age_override(tmp_path):
+    today = date(2026, 5, 1)
+    a = _touch(tmp_path, "2026-04-29.md")  # 2 days
+    b = _touch(tmp_path, "2026-04-25.md")  # 6 days
+    deleted = prune_archive(today, archive_dir=tmp_path, max_age_days=3)
+    assert deleted == [b]
+    assert a.exists() and not b.exists()

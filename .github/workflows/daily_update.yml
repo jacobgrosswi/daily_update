@@ -105,7 +105,9 @@ jobs:
         run: |
           git config user.name "daily-update-bot"
           git config user.email "daily-update-bot@users.noreply.github.com"
-          git add archive/ state/ config/preferences.yml
+          # -A so deletions from prune_archive() are staged alongside the
+          # new archive entry. Plain `git add archive/` would miss removals.
+          git add -A archive/ state/ config/preferences.yml
           if git diff --cached --quiet; then
             echo "No archive, state, or prefs changes to commit."
           else
