@@ -66,8 +66,12 @@ def _claude_returning(text: str) -> MagicMock:
 def test_load_newsletters_config_round_trip():
     cfgs = load_newsletters_config()
     senders = {c.sender for c in cfgs}
-    assert "dan@tldrnewsletter.com" in senders
-    assert "news@daily.therundown.ai" in senders
+    # Domain-only entries for hosts that don't share a domain with other lists.
+    assert "tldrnewsletter.com" in senders
+    assert "daily.therundown.ai" in senders
+    # Full addresses for shared-domain hosts (substack.com, mail.beehiiv.com).
+    assert "bensbites@substack.com" in senders
+    assert "aibreakfast@mail.beehiiv.com" in senders
     assert all(c.sender == c.sender.lower() for c in cfgs)
 
 
@@ -100,6 +104,41 @@ def test_filter_newsletters_drops_unconfigured_senders():
     cfgs = [_cfg()]
     emails = [_email("noreply@random.com")]
     assert filter_newsletters(emails, cfgs) == []
+
+
+def test_filter_newsletters_matches_bare_domain_against_any_address():
+    cfgs = [_cfg(name="TLDR AI", sender="tldrnewsletter.com")]
+    emails = [
+        _email("dan@tldrnewsletter.com", msg_id="a"),
+        _email("noreply@TLDRNewsletter.com", msg_id="b"),
+        _email("someone@else.com", msg_id="miss"),
+    ]
+    out = filter_newsletters(emails, cfgs)
+    assert sorted(e.id for e, _ in out) == ["a", "b"]
+    assert all(c.name == "TLDR AI" for _, c in out)
+
+
+def test_filter_newsletters_full_address_does_not_match_other_addresses_on_same_domain():
+    """Full-address entries (e.g. substack.com lists) must not pull in
+    unrelated senders that happen to share the domain."""
+    cfgs = [_cfg(name="Ben's Bites", sender="bensbites@substack.com")]
+    emails = [
+        _email("bensbites@substack.com", msg_id="hit"),
+        _email("someone-else@substack.com", msg_id="miss"),
+    ]
+    out = filter_newsletters(emails, cfgs)
+    assert [e.id for e, _ in out] == ["hit"]
+
+
+def test_filter_newsletters_prefers_full_address_over_domain_when_both_configured():
+    """If both a domain entry and a specific-address entry match, the
+    specific-address config wins so per-sender naming stays accurate."""
+    addr_cfg = _cfg(name="Specific", sender="alerts@example.com")
+    domain_cfg = _cfg(name="Generic", sender="example.com")
+    cfgs = [domain_cfg, addr_cfg]
+    out = filter_newsletters([_email("alerts@example.com", msg_id="x")], cfgs)
+    assert len(out) == 1
+    assert out[0][1].name == "Specific"
 
 
 # ---------- _html_to_text ----------

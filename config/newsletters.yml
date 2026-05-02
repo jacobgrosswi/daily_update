@@ -1,11 +1,15 @@
 # AI newsletters to curate. Add/remove entries here; the daily run reads this file.
 # `active: false` skips a sender without removing it.
+#
+# `sender` may be either a full email address (exact match) or a bare domain
+# (matches any address from that domain). Use full addresses for shared-domain
+# hosts like substack.com and mail.beehiiv.com.
 newsletters:
   - name: TLDR AI
-    sender: dan@tldrnewsletter.com
+    sender: tldrnewsletter.com
     active: true
   - name: The Rundown
-    sender: news@daily.therundown.ai
+    sender: daily.therundown.ai
     active: true
   - name: AI Breakfast
     sender: aibreakfast@mail.beehiiv.com
@@ -14,5 +18,5 @@ newsletters:
     sender: bensbites@substack.com
     active: true
   - name: Superhuman AI
-    sender: superhuman@mail.joinsuperhuman.ai
+    sender: mail.joinsuperhuman.ai
     active: true

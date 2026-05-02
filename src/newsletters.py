@@ -96,11 +96,21 @@ def load_preferences(path: Path = PREFERENCES_PATH) -> dict:
 def filter_newsletters(
     emails: list[Email], configs: list[NewsletterConfig],
 ) -> list[tuple[Email, NewsletterConfig]]:
-    """Return (email, config) pairs for messages whose sender matches a config."""
-    by_sender = {c.sender: c for c in configs}
+    """Return (email, config) pairs for messages whose sender matches a config.
+
+    A config's `sender` may be either a full address (`dan@tldrnewsletter.com`)
+    matched exactly, or a bare domain (`tldrnewsletter.com`) matched against
+    the part after `@`. Use full addresses for shared-domain hosts like
+    substack.com and mail.beehiiv.com to avoid pulling in unrelated lists.
+    """
+    by_address = {c.sender: c for c in configs if "@" in c.sender}
+    by_domain = {c.sender: c for c in configs if "@" not in c.sender}
     out: list[tuple[Email, NewsletterConfig]] = []
     for e in emails:
-        cfg = by_sender.get((e.sender_address or "").lower())
+        addr = (e.sender_address or "").lower()
+        cfg = by_address.get(addr)
+        if cfg is None and "@" in addr:
+            cfg = by_domain.get(addr.rsplit("@", 1)[1])
         if cfg is not None:
             out.append((e, cfg))
     return out
